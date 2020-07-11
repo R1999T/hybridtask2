@@ -1,0 +1,217 @@
+provider "aws" {
+  region  = "ap-south-1"
+  profile = "Raghav"
+}
+
+//VPC launch
+
+// You can use 10.0.0.0/16 vpc
+
+resource "aws_vpc" "main" {
+  cidr_block       = "10.0.0.0/16"
+  enable_dns_hostnames   = true
+  tags = {
+    Name = "KT_VPC"
+  }
+}
+
+
+// launching subnets providing subnet1 10.0.1.0/24 subnet2 10.0.2.0/24
+
+resource "aws_subnet" "main" {
+
+ depends_on = [
+          aws_vpc.main,
+    ] 
+
+  vpc_id     = aws_vpc.main.id
+  cidr_block 	= "10.0.1.0/24"
+  availability_zone       = "ap-south-1a"
+  map_public_ip_on_launch 	=   true  
+
+  tags = {
+    Name = "KT1a_pubSUB"
+  }
+}
+
+resource "aws_subnet" "mainb" {
+
+ depends_on = [
+          aws_subnet.main,
+    ] 
+
+  vpc_id     = aws_vpc.main.id
+  cidr_block 	= "10.0.2.0/24"
+  availability_zone       = "ap-south-1b"
+  map_public_ip_on_launch 	=   true  
+
+  tags = {
+    Name = "KT1b_priSUB"
+  }
+}
+
+//creating internet gateway
+
+resource "aws_internet_gateway" "gw" {
+
+depends_on = [
+          aws_subnet.mainb,
+    ] 
+
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "KT_IGW"
+  }
+}
+
+//creating route table
+
+resource "aws_route_table" "r" {
+
+depends_on = [
+          aws_internet_gateway.gw,
+    ] 
+
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.gw.id
+  }
+
+  tags = {
+    Name = "KT_route"
+  }
+}
+
+resource "aws_route_table_association" "a" {
+  subnet_id      = aws_subnet.main.id
+  route_table_id = aws_route_table.r.id
+}
+
+
+//creating  key 
+
+resource "tls_private_key" "task-key" {
+
+depends_on = [
+         aws_route_table_association.a,
+    ] 
+
+  algorithm   = "RSA"
+  provisioner "local-exec" {
+	command = "echo  ' ${tls_private_key.task-key.private_key_pem}'  >  deployer-key.pem  &&  chmod  400  deployer-key.pem "
+         }
+}
+
+resource "aws_key_pair" "deployer" {
+
+   depends_on = [
+           tls_private_key.task-key,
+    ] 
+
+
+  key_name   = "deployer-key"
+  public_key =  tls_private_key.task-key.public_key_openssh
+}
+
+//CREATING SECURITY GROUP
+
+resource "aws_security_group" "allow_tls" {
+
+depends_on = [
+         aws_key_pair.deployer,
+    ] 
+
+  name        = "allow_tls"
+  description = "Allow TLS inbound traffic"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "TLS from VPC"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+ ingress {
+    description = "httpd"
+    from_port   = 40
+    to_port     = 40
+    protocol    = "tcp"
+    cidr_blocks =["0.0.0.0/0"]
+  }
+
+//alowing SSH
+
+ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+ingress {
+    description = "SSH"
+    from_port   = 3360
+    to_port     = 3360
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "allow_tls"
+  }
+}
+
+
+//launching database INSTANCE
+
+resource "aws_instance" "mysql" {
+
+  depends_on = [
+         aws_security_group.allow_tls,
+    ] 
+
+  instance_type	 = "t2.micro"
+  ami  	         	 = "ami-00f4bd507372b89b3"
+  vpc_security_group_ids = [aws_security_group.allow_tls.id]
+  subnet_id		 =  aws_subnet.mainb.id
+  key_name = "deployer-key"
+ 
+  tags = {
+    Name = "myDBos"
+  }
+}
+
+//launching frontend INSTANCE
+
+resource "aws_instance" "WP" {
+
+ depends_on = [
+        aws_instance.mysql,
+    ] 
+
+
+  instance_type	 = "t2.micro"
+  ami  	         	 = "ami-00d4d7d849bc31615"
+  vpc_security_group_ids = [aws_security_group.allow_tls.id]
+  subnet_id		 =  aws_subnet.main.id
+  key_name = "deployer-key"
+
+ 
+  tags = {
+    Name = "myWPos"
+  }
+}
+
